@@ -28,7 +28,7 @@ CHROMA_PATH = "./chroma_db"
 
 EMBED_MODEL_NAME = "BAAI/bge-m3"
 
-CHUNK_SIZE = 1000
+CHUNK_SIZE = 800
 TOP_K = 7
 
 
@@ -106,22 +106,19 @@ def extract_pdf_text(path):
 # CHUNKING
 # ======================
 def split_text(text):
-    paragraphs = text.split("\n")
-
     chunks = []
     current = ""
     chunk_id = 0
 
-    for p in paragraphs:
-        if not p.strip():
-            continue
+    sentences = re.split(r'(?<=[.!?]) +', text)
 
-        if len(current) + len(p) < CHUNK_SIZE:
-            current += " " + p
+    for s in sentences:
+        if len(current) + len(s) <= CHUNK_SIZE:
+            current += " " + s
         else:
             chunks.append((current.strip(), chunk_id))
             chunk_id += 1
-            current = p
+            current = s
 
     if current:
         chunks.append((current.strip(), chunk_id))
@@ -236,6 +233,7 @@ def ask_llm_with_context(query, context):
 Ты — эксперт по документам.
 Отвечай лишь на поставленный вопрос без дополнений.
 Четко и кратко.
+Если этой информации нет - отвечай "НИДОИНТ" 
 
 КОНТЕКСТ:
 {context}
