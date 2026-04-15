@@ -2,26 +2,8 @@ import json
 import numpy as np
 from collections import Counter
 
-from app_gui import retrieve, ask_llm_with_context
-
-
-# ======================
-# DEBUG CONTEXT
-# ======================
-def print_retrieved_context(query, results, top_k=5):
-    print("\n==============================")
-    print("RETRIEVAL DEBUG CONTEXT")
-    print("==============================")
-
-    print("\nЗапрос:")
-    print(query)
-
-    print("\nTOP-K RETRIEVAL:")
-    for i, r in enumerate(results[:top_k]):
-        print(f"\n[{i+1}] source={r['source']} chunk={r['chunk_id']} score={r['score']:.4f}")
-        print(r["text"][:300])
-
-    print("\n==============================\n")
+# импорт из твоей системы
+from app_gui import retrieve, ask_llm_with_context, TOP_K
 
 
 # ======================
@@ -33,9 +15,10 @@ def load_dataset(path="eval_dataset.json"):
 
 
 # ======================
-# METRICS
+# RETRIEVAL METRICS
 # ======================
-def recall_at_k(results, relevant_docs, k=5):
+def recall_at_k(results, relevant_docs, k=TOP_K):
+    results = sorted(results, key=lambda x: x["score"])
     top = results[:k]
 
     for rel in relevant_docs:
@@ -46,6 +29,8 @@ def recall_at_k(results, relevant_docs, k=5):
 
 
 def mrr(results, relevant_docs):
+    results = sorted(results, key=lambda x: x["score"])
+
     for i, r in enumerate(results):
         for rel in relevant_docs:
             if rel.lower() in r["text"].lower():
@@ -53,6 +38,9 @@ def mrr(results, relevant_docs):
     return 0
 
 
+# ======================
+# TEXT METRICS
+# ======================
 def normalize(text):
     return text.lower().strip()
 
@@ -67,8 +55,11 @@ def f1_score(pred, truth):
     if num_same == 0:
         return 0
 
-    precision = num_same / len(pred_tokens)
-    recall = num_same / len(truth_tokens)
+    precision = num_same / len(pred_tokens) if pred_tokens else 0
+    recall = num_same / len(truth_tokens) if truth_tokens else 0
+
+    if precision + recall == 0:
+        return 0
 
     return 2 * precision * recall / (precision + recall)
 
@@ -78,7 +69,7 @@ def exact_match(pred, truth):
 
 
 # ======================
-# EVALUATION
+# EVALUATION LOOP
 # ======================
 def evaluate(dataset):
     recall_scores = []
@@ -96,21 +87,37 @@ def evaluate(dataset):
         # ===== RETRIEVE =====
         results = retrieve(q)
 
-        r_at_k = recall_at_k(results, relevant_docs, k=5)
+        # сортировка (важно!)
+        results = sorted(results, key=lambda x: x["score"])
+
+        r_at_k = recall_at_k(results, relevant_docs)
         recall_scores.append(r_at_k)
 
-        print("Recall@5:", r_at_k)
+        print("Recall@K:", r_at_k)
 
         mrr_score = mrr(results, relevant_docs)
         mrr_scores.append(mrr_score)
 
         print("MRR:", round(mrr_score, 3))
 
-        # ===== DEBUG CONTEXT =====
-        print_retrieved_context(q, results)
+        # ===== CONTEXT (как в app_gui.py) =====
+        context_blocks = []
+
+        for j, r in enumerate(results[:TOP_K]):
+            block = (
+                f"[{j+1}] SOURCE: {r['source']} | CHUNK: {r['chunk_id']} | SCORE: {r['score']:.4f}\n"
+                f"{r['text']}"
+            )
+            context_blocks.append(block)
+
+        debug_context = "\n\n".join(context_blocks)
+        context = "\n\n".join([r["text"] for r in results[:TOP_K]])
+
+        print("\n=========== CONTEXT ===========\n")
+        print(debug_context)
+        print("\n===============================\n")
 
         # ===== LLM =====
-        context = "\n\n".join([r["text"] for r in results[:5]])
         pred = ask_llm_with_context(q, context)
 
         print("Prediction:", pred)
@@ -125,10 +132,10 @@ def evaluate(dataset):
         print("F1:", round(f1, 3), "| EM:", em)
 
     # ======================
-    # FINAL RESULTS
+    # FINAL REPORT
     # ======================
     print("\n================= FINAL RESULTS =================")
-    print("Recall@5:", round(np.mean(recall_scores), 3))
+    print("Recall@K:", round(np.mean(recall_scores), 3))
     print("MRR:", round(np.mean(mrr_scores), 3))
     print("F1:", round(np.mean(f1_scores), 3))
     print("Exact Match:", round(np.mean(em_scores), 3))

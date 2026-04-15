@@ -8,7 +8,6 @@ import chromadb
 import requests
 from sentence_transformers import SentenceTransformer
 
-
 # ======================
 # PDF SUPPORT
 # ======================
@@ -19,18 +18,14 @@ except Exception:
     from pypdf import PdfReader
     USE_FITZ = False
 
-
 # ======================
 # CONFIG
 # ======================
 DATA_FOLDER = "data"
 CHROMA_PATH = "./chroma_db"
-
 EMBED_MODEL_NAME = "BAAI/bge-m3"
-
 CHUNK_SIZE = 800
 TOP_K = 7
-
 
 # ======================
 # MODELSЫ
@@ -56,12 +51,11 @@ def clean_text(text):
         return ""
 
     text = re.sub(r"-\n", "", text)
-    text = re.sub(r"\n+", "\n", text)
-    text = re.sub(r"[^\w\s.,!?():;\-\n]", "", text)
+    text = re.sub(r"\n+", " ", text)
+    text = re.sub(r"[^\w\s.,!?():;-]", "", text)
     text = re.sub(r"[ \t]+", " ", text)
 
     return text.strip()
-
 
 # ======================
 # PDF EXTRACTION
@@ -101,18 +95,27 @@ def extract_pdf_text(path):
         print("PDF ERROR:", e)
         return ""
 
-
 # ======================
 # CHUNKING
 # ======================
 def split_text(text):
     chunks = []
-    current = ""
     chunk_id = 0
 
-    sentences = re.split(r'(?<=[.!?]) +', text)
+    # нормализуем переносы
+    text = text.replace("\n", " ")
+
+    # разбиваем на предложения (более устойчиво)
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+
+    current = ""
 
     for s in sentences:
+        s = s.strip()
+
+        if not s:
+            continue
+
         if len(current) + len(s) <= CHUNK_SIZE:
             current += " " + s
         else:
@@ -124,7 +127,6 @@ def split_text(text):
         chunks.append((current.strip(), chunk_id))
 
     return chunks
-
 
 # ======================
 # LOAD DOCS
@@ -155,7 +157,7 @@ def load_all_docs(folder):
 
             for c, cid in chunks:
                 docs.append({
-                    "text": c,
+                    "text": f"Документ: {file}\n\n{c}",
                     "source": file,
                     "chunk_id": cid
                 })
@@ -165,7 +167,6 @@ def load_all_docs(folder):
 
     print("TOTAL CHUNKS:", len(docs))
     return docs
-
 
 # ======================
 # INDEX
@@ -188,12 +189,10 @@ def build_index():
 
     print("INDEX READY:", len(docs))
 
-
 if collection.count() == 0:
     build_index()
 else:
     print("Using existing index:", collection.count())
-
 
 # ======================
 # RETRIEVAL
@@ -223,6 +222,25 @@ def retrieve(query):
 
     return results
 
+# ======================
+# CONTEXT BUILDING
+# ======================
+def build_context(results):
+    results = sorted(results, key=lambda x: x["score"])
+
+    context_blocks = []
+
+    for i, r in enumerate(results[:TOP_K]):
+        block = (
+            f"[{i+1}] SOURCE: {r['source']} | CHUNK: {r['chunk_id']} | SCORE: {r['score']:.4f}\n"
+            f"{r['text']}"
+        )
+        context_blocks.append(block)
+
+    context = "\n\n".join([r["text"] for r in results[:TOP_K]])
+    debug_context = "\n\n".join(context_blocks)
+
+    return context, debug_context
 
 # ======================
 # LLM
@@ -241,7 +259,7 @@ def ask_llm_with_context(query, context):
 ВОПРОС:
 {query}
 
-ОТВЕТ:
+ТОЧНЫЙ ОТВЕТ:
 """
 
         r = requests.post(
@@ -260,35 +278,24 @@ def ask_llm_with_context(query, context):
     except Exception as e:
         return f"Ошибка: {str(e)}"
 
-
 # ======================
 # PIPELINE
 # ======================
 def ask_llm(query):
     results = retrieve(query)
 
-    context = "\n\n".join([r["text"] for r in results[:7]])
-
-    return ask_llm_with_context(query, context)
-
-
-# ======================
-# DEBUG TOOL
-# ======================
-def debug_retrieval(query):
-    results = retrieve(query)
+    context, debug_context = build_context(results)
 
     print("\n====================")
-    print("RETRIEVAL DEBUG")
-    print("====================")
+    print("КОНТЕКСТ ДЛЯ LLM")
+    print("====================\n")
+    print(debug_context)
+    print("\n====================\n")
 
-    print("\nQUERY:", query)
+    answer = ask_llm_with_context(query, context)
 
-    for i, r in enumerate(results):
-        print(f"\n[{i+1}] score={r['score']:.4f}")
-        print(r["text"][:250])
+    return f" КОНТЕКСТ:\n\n{debug_context}\n\n ОТВЕТ:\n{answer}"
 
-    return results
 
 
 # ======================
@@ -309,13 +316,11 @@ chat.config(state=tk.DISABLED)
 entry = tk.Entry(window, font=("Arial", 13))
 entry.pack(fill=tk.X, padx=10, pady=8)
 
-
 def add(sender, msg):
     chat.config(state=tk.NORMAL)
     chat.insert(tk.END, f"\n{sender}:\n{msg}\n")
     chat.config(state=tk.DISABLED)
     chat.see(tk.END)
-
 
 def send(event=None):
     q = entry.get()
@@ -341,8 +346,8 @@ def send(event=None):
 
         window.after(0, update)
 
-    threading.Thread(target=run, daemon=True).start()
 
+    threading.Thread(target=run, daemon=True).start()
 
 entry.bind("<Return>", send)
 
